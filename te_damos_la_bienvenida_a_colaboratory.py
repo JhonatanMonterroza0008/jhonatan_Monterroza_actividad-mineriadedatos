@@ -1,189 +1,67 @@
-# app.py — Dashboard de indicadores (ajustado para reconocer 'enrolled')
 import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
 
-# ---------------- Config ----------------
-st.set_page_config(page_title="Dashboard de indicadores", layout="wide")
+st.set_page_config(page_title="Tendencia de Ventas", layout="centered")
+st.title("Tendencia de Ventas Mensuales")
 
-# ---------------- Utilidades ----------------
-def cargar_datos():
-    try:
-        return pd.read_csv("university_student_data.csv")
-    except Exception:
-        up = st.sidebar.file_uploader("Cargar CSV", type=["csv"])
-        if up is not None:
-            try:
-                return pd.read_csv(up)
-            except Exception:
-                st.error("No se pudo leer el CSV.")
-    return None
+meses = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"]
+ventas = [20, 27, 25, 32, 38, 41, 47, 53, 58, 62, 65, 70]
 
-def normalizar_columnas(df: pd.DataFrame) -> pd.DataFrame:
-    cols = (
-        df.columns.str.strip().str.lower()
-        .str.replace("á", "a").str.replace("é", "e")
-        .str.replace("í", "i").str.replace("ó", "o")
-        .str.replace("ú", "u").str.replace("ñ", "n")
+df = pd.DataFrame({
+    "Mes": meses,
+    "Ventas (en miles)": ventas
+})
+col1, col2 = st.columns([2, 1])
+
+with col1:
+    modo = st.radio(
+        "Modo de visualización",
+        ["Acumulado hasta el mes", "Solo el mes seleccionado"],
+        index=0,
+        help="Elige si quieres ver la serie acumulada hasta el mes o únicamente el mes seleccionado."
     )
-    out = df.copy()
-    out.columns = cols
-    return out
 
-def mapear_columnas(df: pd.DataFrame) -> dict:
-    cand = {
-        "year": ["year", "anio", "ano"],
-        "department": ["department", "departamento", "dept"],
-        "term": ["term", "semestre", "period", "periodo"],
-        "applications": ["applications", "applicants", "solicitudes", "aplicaciones"],
-        # <-- ampliado: incluye 'enrolled' y variantes comunes
-        "enrollments": [
-            "enrollments", "enrolled", "enrollment",
-            "students_enrolled", "students enrolled",
-            "total_enrolled", "total enrolled",
-            "matriculas", "matriculados", "inscritos", "registrados"
-        ],
-        "retention_rate": ["retention_rate", "retention", "tasa_retencion", "retencion"],
-        "satisfaction": ["satisfaction", "satisfaccion", "satisfaction_score"],
-    }
-    mapping = {}
-    cols = list(df.columns)
-    for std, opciones in cand.items():
-        for op in opciones:
-            if op in cols:
-                mapping[std] = op
-                break
-            m = [c for c in cols if op in c]  # substring
-            if m:
-                mapping[std] = m[0]
-                break
-    return mapping
+with col2:
+    show_grid = st.checkbox("Mostrar cuadrícula", value=True)
+    color = st.color_picker("Color de la línea", value="#4169E1")
 
-def to_num(s: pd.Series) -> pd.Series:
-    return pd.to_numeric(s, errors="coerce")
+idx_mes = st.slider("Selecciona el mes", min_value=1, max_value=12, value=12, step=1, format="%d")
+mes_seleccionado = meses[idx_mes - 1]
 
-def as_percent(x: float) -> float:
-    if pd.isna(x):
-        return float("nan")
-    return x * 100 if 0 <= x <= 1 else x
-
-# ---------------- Sidebar ----------------
-st.sidebar.header("Opciones")
-plt.style.use("default")
-color_1 = st.sidebar.color_picker("Color primario", value="#4169E1")
-color_2 = st.sidebar.color_picker("Color secundario", value="#2DBE7E")
-show_grid = st.sidebar.checkbox("Cuadrícula", value=True)
-
-# ---------------- Carga ----------------
-df_raw = cargar_datos()
-st.title("Dashboard de indicadores")
-
-if df_raw is None or df_raw.empty:
-    st.info("Coloca 'university_student_data.csv' en la raíz o súbelo desde la barra lateral.")
-    st.stop()
-
-# ---------------- Preparación ----------------
-df = normalizar_columnas(df_raw)
-mapping = mapear_columnas(df)
-
-minimas = ["year", "applications", "enrollments"]
-faltan = [c for c in minimas if c not in mapping]
-if faltan:
-    st.error("Faltan columnas mínimas: " + ", ".join(faltan))
-    st.write("Detectadas:", mapping)
-    st.stop()
-
-U = pd.DataFrame()
-for std, real in mapping.items():
-    U[std] = df[real]
-
-if "year" in U: U["year"] = to_num(U["year"])
-for c in ["applications", "enrollments", "satisfaction", "retention_rate"]:
-    if c in U: U[c] = to_num(U[c])
-
-if {"applications", "enrollments"}.issubset(U.columns):
-    U["conversion_rate"] = U["enrollments"] / U["applications"].replace(0, pd.NA)
-
-# ---------------- Filtros ----------------
-with st.expander("Filtros", expanded=True):
-    c1, c2, c3 = st.columns(3)
-    years = sorted(U["year"].dropna().unique()) if "year" in U else []
-    sel_years = c1.multiselect("Año", years, default=years) if years else []
-    if "department" in U:
-        depts = sorted(U["department"].dropna().astype(str).unique())
-        sel_depts = c2.multiselect("Departamento", depts, default=depts)
-    else:
-        sel_depts = []
-    if "term" in U:
-        terms = sorted(U["term"].dropna().astype(str).unique())
-        sel_terms = c3.multiselect("Term", terms, default=terms)
-    else:
-        sel_terms = []
-
-F = U.copy()
-if sel_years: F = F[F["year"].isin(sel_years)]
-if sel_depts and "department" in F: F = F[F["department"].astype(str).isin(sel_depts)]
-if sel_terms and "term" in F: F = F[F["term"].astype(str).isin(sel_terms)]
-
-# ---------------- KPIs ----------------
-k1, k2, k3, k4 = st.columns(4)
-apps = F["applications"].sum() if "applications" in F else 0
-enrs = F["enrollments"].sum() if "enrollments" in F else 0
-conv = (enrs / apps * 100) if apps and apps > 0 else float("nan")
-ret = as_percent(F["retention_rate"].mean()) if "retention_rate" in F else float("nan")
-sat = as_percent(F["satisfaction"].mean()) if "satisfaction" in F else float("nan")
-
-k1.metric("Solicitudes", f"{int(apps):,}" if pd.notna(apps) else "0")
-k2.metric("Matrículas", f"{int(enrs):,}" if pd.notna(enrs) else "0")
-k3.metric("Conversión", f"{conv:.1f}%") if pd.notna(conv) else k3.metric("Conversión", "N/D")
-k4.metric("Retención / Satisfacción", f"{ret:.1f}% / {sat:.1f}%")
-
-st.divider()
-
-# ---------------- Gráficas ----------------
-g1, g2 = st.columns([2, 1])
-
-with g1:
-    if {"retention_rate", "year"}.issubset(F.columns):
-        serie = F.groupby("year")["retention_rate"].mean().sort_index()
-        y = serie * 100 if serie.max() <= 1 else serie
-        fig1, ax1 = plt.subplots(figsize=(8, 4.2))
-        ax1.plot(serie.index, y.values, marker="o", lw=2, color=color_1)
-        ax1.set_xlabel("Año"); ax1.set_ylabel("Retención (%)"); ax1.set_title("Retención por año")
-        if show_grid: ax1.grid(True, alpha=0.3)
-        fig1.tight_layout(); st.pyplot(fig1, use_container_width=True)
-    else:
-        st.info("Se requiere 'year' y 'retention_rate'.")
-
-with g2:
-    if {"satisfaction", "year"}.issubset(F.columns):
-        s = F.groupby("year")["satisfaction"].mean().sort_index()
-        y = s * 100 if s.max() <= 1 else s
-        fig2, ax2 = plt.subplots(figsize=(5.2, 4.2))
-        ax2.bar(s.index.astype(str), y.values, color=color_2)
-        ax2.set_xlabel("Año"); ax2.set_ylabel("Satisfacción (%)"); ax2.set_title("Satisfacción por año")
-        if show_grid: ax2.grid(True, axis="y", alpha=0.3)
-        fig2.tight_layout(); st.pyplot(fig2, use_container_width=True)
-    else:
-        st.info("Se requiere 'year' y 'satisfaction'.")
-
-st.markdown("**Matrículas por categoría**")
-cat_opciones = []
-if "department" in F: cat_opciones.append("department")
-if "term" in F: cat_opciones.append("term")
-
-if "enrollments" in F and cat_opciones:
-    cat = st.selectbox("Categoría", cat_opciones, format_func=lambda x: "Departamento" if x=="department" else "Term")
-    dist = F.groupby(cat)["enrollments"].sum().sort_values(ascending=False)
-    fig3, ax3 = plt.subplots(figsize=(8, 4.2))
-    ax3.bar(dist.index.astype(str), dist.values, color=color_1)
-    ax3.set_xlabel("Categoría"); ax3.set_ylabel("Matrículas"); ax3.set_title("Distribución de matrículas")
-    if show_grid: ax3.grid(True, axis="y", alpha=0.3)
-    fig3.tight_layout(); st.pyplot(fig3, use_container_width=True)
+if modo == "Acumulado hasta el mes":
+    df_plot = df.iloc[:idx_mes].copy()
+    titulo = f"Tendencia de Ventas (acumulado hasta {mes_seleccionado})"
 else:
-    st.info("Se requiere 'enrollments' y al menos una categoría ('department' o 'term').")
+    df_plot = df.iloc[idx_mes-1:idx_mes].copy()
+    titulo = f"Ventas del mes de {mes_seleccionado}"
 
-st.divider()
-t1, t2 = st.tabs(["Datos filtrados", "Datos completos"])
-with t1: st.dataframe(F, use_container_width=True)
-with t2: st.dataframe(U, use_container_width=True)
+col_a, col_b, col_c = st.columns(3)
+valor_mes = df.loc[df["Mes"] == mes_seleccionado, "Ventas (en miles)"].iloc[0]
+promedio_hasta = df.iloc[:idx_mes]["Ventas (en miles)"].mean()
+max_hasta = df.iloc[:idx_mes]["Ventas (en miles)"].max()
+
+col_a.metric("Ventas del mes", f"{valor_mes}k")
+col_b.metric("Promedio hasta el mes", f"{promedio_hasta:.1f}k")
+col_c.metric("Máximo hasta el mes", f"{max_hasta}k")
+
+fig, ax = plt.subplots(figsize=(10, 5))
+ax.plot(df_plot["Mes"], df_plot["Ventas (en miles)"], marker='o', linestyle='-', color=color)
+
+if modo == "Acumulado hasta el mes" and len(df_plot) > 1:
+    ax.fill_between(df_plot["Mes"], df_plot["Ventas (en miles)"], step=None, alpha=0.15)
+
+ax.set_xlabel("Mes")
+ax.set_ylabel("Ventas (en miles)")
+ax.set_title(titulo)
+ax.grid(show_grid)
+fig.tight_layout()
+
+st.pyplot(fig)
+tab1, tab2 = st.tabs(["📈 Datos mostrados", "📚 Datos completos"])
+with tab1:
+    st.dataframe(df_plot.reset_index(drop=True), use_container_width=True)
+with tab2:
+    st.dataframe(df, use_container_width=True)
+
+st.caption("Mueve el slider para explorar mes a mes o cambia el modo para ver un único mes.")
