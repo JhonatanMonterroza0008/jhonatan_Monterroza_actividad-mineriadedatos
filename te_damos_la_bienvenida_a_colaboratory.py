@@ -2,119 +2,201 @@ import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
 
-st.set_page_config(page_title="Analítica de Admisiones • Retención • Satisfacción", layout="centered")
-st.title("Analítica de Admisiones, Retención y Satisfacción Estudiantil")
+st.set_page_config(page_title="Admissions & Retention Dashboard", layout="wide")
 
-@st.cache_data
-def load_data(path: str):
-    df = pd.read_csv(path)
-    df["Year"] = df["Year"].astype(int)
-    df["Term"] = df["Term"].astype(str)
-    return df
+# ---------------- UI theme (Atomic Heart inspired) ----------------
+PRIMARY = st.session_state.get("primary_color", "#D32F2F")   # rojo
+DARK_BG = "#0f0f0f"
+CARD_BG = "#171717"
+TEXT = "#EDEDED"
 
-DATA_PATH = "university_student_data.csv"
-df = load_data(DATA_PATH)
+st.markdown(f"""
+    <style>
+        .stApp {{
+            background: radial-gradient(circle at 20% 10%, #0c0c0c, {DARK_BG});
+            color:{TEXT};
+        }}
+        .block-container {{ padding-top: 1.2rem; }}
+        .ah-card {{
+            background:{CARD_BG};
+            padding:1rem 1.2rem;
+            border:1px solid #2a2a2a;
+            border-radius:14px;
+            box-shadow: 0 0 0 1px rgba(255,255,255,0.03) inset;
+        }}
+        .ah-title {{
+            font-weight:800;
+            letter-spacing:0.5px;
+            color:{TEXT};
+        }}
+        .ah-accent {{ color:{PRIMARY}; }}
+        .metric-small > div > div {{
+            background:{CARD_BG};
+            border:1px solid #2a2a2a;
+            border-radius:12px;
+        }}
+        div[data-testid="stMetricDelta"] svg {{ display:none; }}
+        .stTabs [data-baseweb="tab-list"] button {{ background:{CARD_BG}; border-radius:12px; }}
+    </style>
+""", unsafe_allow_html=True)
 
-# --- Controles ---
-years = sorted(df["Year"].unique())
-colA, colB, colC = st.columns([2, 1.2, 1.2])
-with colA:
-    year_sel = st.slider("Selecciona el año", min_value=int(min(years)), max_value=int(max(years)),
-                         value=int(max(years)), step=1, format="%d")
-with colB:
-    term_sel = st.radio("Term", options=["Todos", "Spring", "Fall"], index=0)
-with colC:
-    show_grid = st.checkbox("Mostrar cuadrícula", value=True)
+st.markdown('<h2 class="ah-title">Dashboard — Admisiones, Retención y Satisfacción <span class="ah-accent">2015–2024</span></h2>', unsafe_allow_html=True)
 
-col1, col2 = st.columns([2, 1])
-with col1:
-    modo = st.radio(
-        "Modo de visualización",
-        ["Acumulado hasta el año", "Solo el año seleccionado"],
-        index=0
-    )
-with col2:
-    color = st.color_picker("Color de la línea", value="#4169E1")
+# ---------------- Carga de datos ----------------
+def cargar_datos():
+    try:
+        return pd.read_csv("university_student_data.csv")
+    except Exception:
+        return None
 
-dept_options = [
-    "Todos (Enrolled)",
-    "Engineering Enrolled",
-    "Business Enrolled",
-    "Arts Enrolled",
-    "Science Enrolled",
+df = cargar_datos()
+
+archivo = st.sidebar.file_uploader("Cargar university_student_data.csv", type=["csv"])
+if df is None and archivo is not None:
+    df = pd.read_csv(archivo)
+
+# Si no hay datos, mostrar instrucción breve
+if df is None:
+    st.info("Sube **university_student_data.csv** para continuar.")
+    st.stop()
+
+# ---------------- Ajustes y columnas esperadas ----------------
+esperadas = [
+    "Year","Term","Applications","Admitted","Enrolled",
+    "Retention Rate (%)","Student Satisfaction (%)",
+    "Engineering Enrolled","Business Enrolled","Arts Enrolled","Science Enrolled"
 ]
-dept_sel = st.selectbox("Departamento", options=dept_options, index=0)
+faltantes = [c for c in esperadas if c not in df.columns]
+if faltantes:
+    st.error(f"Faltan columnas esperadas: {faltantes}")
+    st.stop()
 
-# --- Filtro de datos ---
-df_f = df.copy()
-if term_sel != "Todos":
-    df_f = df_f[df_f["Term"] == term_sel]
+df = df.copy()
+df["Year"] = df["Year"].astype(int)
+df["Term"] = df["Term"].astype(str)
 
-df_up_to = df_f[df_f["Year"] <= year_sel]
-y_col = "Enrolled" if dept_sel == "Todos (Enrolled)" else dept_sel
+# Long format por departamento
+dept_cols = ["Engineering Enrolled","Business Enrolled","Arts Enrolled","Science Enrolled"]
+depts = ["Engineering","Business","Arts","Science"]
+df_long = df.melt(id_vars=["Year","Term","Applications","Admitted","Enrolled","Retention Rate (%)","Student Satisfaction (%)"],
+                  value_vars=dept_cols, var_name="Department", value_name="Dept Enrolled")
+df_long["Department"] = df_long["Department"].str.replace(" Enrolled","", regex=False)
 
-# --- KPIs (año seleccionado) ---
-df_kpi = df[(df["Year"] == year_sel) & ((df["Term"] == term_sel) if term_sel != "Todos" else True)]
-apps = int(df_kpi["Applications"].sum()) if not df_kpi.empty else 0
-adm  = int(df_kpi["Admitted"].sum()) if not df_kpi.empty else 0
-enr  = int(df_kpi["Enrolled"].sum()) if not df_kpi.empty else 0
-ret  = float(df_kpi["Retention Rate (%)"].mean()) if not df_kpi.empty else 0.0
-sat  = float(df_kpi["Student Satisfaction (%)"].mean()) if not df_kpi.empty else 0.0
+# ---------------- Controles ----------------
+with st.sidebar:
+    st.subheader("Filtros")
+    years = sorted(df["Year"].unique().tolist())
+    yr_min, yr_max = min(years), max(years)
+    años_sel = st.slider("Años", min_value=int(yr_min), max_value=int(yr_max), value=(int(yr_min), int(yr_max)))
+    term_sel = st.multiselect("Term", options=sorted(df["Term"].unique()), default=sorted(df["Term"].unique()))
+    dept_sel = st.multiselect("Departamento", options=depts, default=depts)
 
-k1, k2, k3, k4, k5 = st.columns(5)
-k1.metric("Applications", f"{apps:,}")
-k2.metric("Admitted", f"{adm:,}")
-k3.metric("Enrolled", f"{enr:,}")
-k4.metric("Retention Rate", f"{ret:.1f}%")
-k5.metric("Student Satisfaction", f"{sat:.1f}%")
+    st.subheader("Gráficos")
+    modo = st.radio("Tendencia de retención", ["Acumulado hasta el año", "Solo el año seleccionado"], index=0)
+    año_corte = st.slider("Año de referencia", min_value=int(yr_min), max_value=int(yr_max), value=int(yr_max))
+    show_grid = st.checkbox("Cuadrícula", value=True)
+    color_linea = st.color_picker("Color línea", value="#D32F2F")
+    color_barras = st.color_picker("Color barras", value="#C62828")
+    color_pie = st.color_picker("Color donut", value="#B71C1C")
 
-# --- Gráfico 1: Tendencia (línea) ---
-df_line = df_up_to.groupby("Year", as_index=False)[y_col].sum().sort_values("Year")
-if modo == "Acumulado hasta el año":
-    df_plot = df_line.copy()
-    titulo = f"Tendencia de {y_col} (acumulado hasta {year_sel})"
-else:
-    df_plot = df_line[df_line["Year"] == year_sel].copy()
-    titulo = f"{y_col} en {year_sel}"
+# Aplicar filtros
+mask_rango = (df["Year"] >= años_sel[0]) & (df["Year"] <= años_sel[1]) & (df["Term"].isin(term_sel))
+df_f = df.loc[mask_rango].copy()
+df_long_f = df_long.loc[(df_long["Year"].between(años_sel[0], años_sel[1])) & (df_long["Term"].isin(term_sel)) & (df_long["Department"].isin(dept_sel))].copy()
 
-fig1, ax1 = plt.subplots(figsize=(9.5, 4.5))
-ax1.plot(df_plot["Year"], df_plot[y_col], marker="o", linestyle="-", color=color)
-if modo == "Acumulado hasta el año" and len(df_plot) > 1:
-    ax1.fill_between(df_plot["Year"], df_plot[y_col], step=None, alpha=0.15, color=color)
-ax1.set_xlabel("Año")
-ax1.set_ylabel(y_col)
-ax1.set_title(titulo)
-ax1.grid(show_grid)
-st.pyplot(fig1)
+# ---------------- KPIs ----------------
+def safe_mean(s):
+    return float(s.mean()) if len(s) else 0.0
 
-# --- Gráfico 2: Barras (Satisfacción por año) ---
-df_sat = df_f.groupby("Year", as_index=False)["Student Satisfaction (%)"].mean()
-fig2, ax2 = plt.subplots(figsize=(9.5, 4.5))
-ax2.bar(df_sat["Year"], df_sat["Student Satisfaction (%)"])
-ax2.set_xlabel("Año")
-ax2.set_ylabel("Satisfacción (%)")
-ax2.set_title("Satisfacción promedio por año (según filtros)")
-ax2.grid(show_grid, axis="y")
-st.pyplot(fig2)
+tot_app = int(df_f["Applications"].sum())
+tot_adm = int(df_f["Admitted"].sum())
+tot_enr = int(df_f["Enrolled"].sum())
+adm_rate = (tot_adm / tot_app * 100) if tot_app else 0.0
+ret_mean = safe_mean(df_f["Retention Rate (%)"])
+sat_mean = safe_mean(df_f["Student Satisfaction (%)"])
 
-# --- Gráfico 3: Donut (Spring vs Fall en el año seleccionado) ---
-df_year = df[df["Year"] == year_sel]
-values = df_year.groupby("Term")[y_col if y_col != "Enrolled" else "Enrolled"].sum()
-labels = values.index.tolist()
-sizes = values.values.tolist()
+c1, c2, c3, c4, c5 = st.columns(5)
+with c1:
+    st.metric("Aplicaciones", f"{tot_app:,}")
+with c2:
+    st.metric("Admitidos", f"{tot_adm:,}")
+with c3:
+    st.metric("Matrícula (Enrolled)", f"{tot_enr:,}")
+with c4:
+    st.metric("Tasa de admisión", f"{adm_rate:.1f}%")
+with c5:
+    st.metric("Retención promedio", f"{ret_mean:.1f}%")
 
-fig3, ax3 = plt.subplots(figsize=(5.5, 5.5))
-wedges, _ = ax3.pie(sizes, labels=labels, autopct="%1.1f%%", startangle=90)
-centre_circle = plt.Circle((0, 0), 0.70, fc="white")
-fig3.gca().add_artist(centre_circle)
-ax3.set_title(f"Distribución por Term en {year_sel} — {y_col}")
-st.pyplot(fig3)
+# ---------------- Tabs ----------------
+tab1, tab2, tab3 = st.tabs(["Tendencia de Retención", "Satisfacción por Año", "Comparativas"])
 
-# --- Tablas ---
-tab1, tab2 = st.tabs(["📈 Datos mostrados", "📚 Datos completos"])
+# ---- Tab 1: línea de retención ----
 with tab1:
-    st.dataframe(df_plot.reset_index(drop=True))
-with tab2:
-    st.dataframe(df)
+    g = df_f.groupby("Year", as_index=False)["Retention Rate (%)"].mean().sort_values("Year")
+    if modo == "Acumulado hasta el año":
+        g_plot = g[g["Year"] <= año_corte]
+        titulo = f"Retención promedio (acumulado hasta {año_corte})"
+    else:
+        g_plot = g[g["Year"] == año_corte]
+        titulo = f"Retención promedio en {año_corte}"
 
-st.caption("Ajusta año, term y departamento para actualizar KPIs y gráficos. Datos: university_student_data.csv.")
+    fig, ax = plt.subplots(figsize=(10, 4.5))
+    ax.plot(g_plot["Year"], g_plot["Retention Rate (%)"], marker="o", linestyle="-", label="Retención", color=color_linea)
+    if modo == "Acumulado hasta el año" and len(g_plot) > 1:
+        ax.fill_between(g_plot["Year"], g_plot["Retention Rate (%)"], alpha=0.15, step=None, color=color_linea)
+    ax.set_title(titulo)
+    ax.set_xlabel("Año")
+    ax.set_ylabel("Retención (%)")
+    ax.grid(show_grid)
+    plt.tight_layout()
+    st.pyplot(fig, use_container_width=True)
+
+# ---- Tab 2: barras de satisfacción ----
+with tab2:
+    g2 = df_f.groupby("Year", as_index=False)["Student Satisfaction (%)"].mean().sort_values("Year")
+    fig2, ax2 = plt.subplots(figsize=(10,4.5))
+    ax2.bar(g2["Year"].astype(str), g2["Student Satisfaction (%)"], color=color_barras, edgecolor="#222222")
+    ax2.set_title("Satisfacción estudiantil por año")
+    ax2.set_xlabel("Año")
+    ax2.set_ylabel("Satisfacción (%)")
+    ax2.grid(show_grid, axis="y")
+    plt.tight_layout()
+    st.pyplot(fig2, use_container_width=True)
+
+# ---- Tab 3: comparativas (donut Term y barras por Departamento) ----
+with tab3:
+    colA, colB = st.columns([1,1])
+
+    with colA:
+        # Donut Spring vs Fall por matrícula
+        g3 = df_f.groupby("Term", as_index=False)["Enrolled"].sum()
+        if len(g3):
+            fig3, ax3 = plt.subplots(figsize=(5.6,5.6))
+            wedges, _ = ax3.pie(g3["Enrolled"], labels=g3["Term"], startangle=90,
+                                 wedgeprops=dict(width=0.40), autopct="%1.0f%%", colors=[color_pie, "#444444"])
+            ax3.set_title("Distribución de matrícula por Term")
+            plt.tight_layout()
+            st.pyplot(fig3, use_container_width=False)
+        else:
+            st.info("Sin datos para el donut con los filtros actuales.")
+
+    with colB:
+        # Barras: distribución por departamento (suma de matriculados)
+        g4 = df_long_f.groupby("Department", as_index=False)["Dept Enrolled"].sum()
+        if len(g4):
+            fig4, ax4 = plt.subplots(figsize=(7,5))
+            ax4.bar(g4["Department"], g4["Dept Enrolled"], color=color_barras, edgecolor="#222222")
+            ax4.set_title("Matrícula total por departamento")
+            ax4.set_xlabel("Departamento")
+            ax4.set_ylabel("Estudiantes")
+            ax4.grid(show_grid, axis="y")
+            plt.tight_layout()
+            st.pyplot(fig4, use_container_width=True)
+        else:
+            st.info("Sin datos para departamentos con los filtros actuales.")
+
+# ---------------- Datos ----------------
+with st.expander("Ver datos filtrados"):
+    st.dataframe(df_f.reset_index(drop=True), use_container_width=True)
+
+st.caption("Autor: Jhonatan Monterroza — Data Mining / Universidad de la Costa")
