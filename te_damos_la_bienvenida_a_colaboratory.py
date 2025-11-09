@@ -1,178 +1,145 @@
-# app.py — Visualización (estilo profesor; fix pie chart robusto)
-
 import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
 
-# ---------------- Configuración ----------------
-st.set_page_config(page_title="Indicadores", layout="centered")
-st.title("Indicadores")
+st.set_page_config(page_title="Admisiones, Retención y Satisfacción", layout="wide")
+st.title("Dashboard universitario — Admisiones, Retención y Satisfacción")
+st.caption("Actividad: Visualización y despliegue de dashboard (Streamlit).")
 
-# ---------------- Carga de datos ----------------
-def cargar():
-    try:
-        return pd.read_csv("university_student_data.csv")
-    except Exception:
-        up = st.file_uploader("Cargar CSV", type=["csv"])
-        if up is not None:
-            try:
-                return pd.read_csv(up)
-            except Exception:
-                st.error("No se pudo leer el CSV.")
+# --- Datos ---
+def cargar_df():
+    # Intenta nombres comunes del CSV (estándar y con (1))
+    for name in ["university_student_data.csv", "university_student_data (1).csv"]:
+        try:
+            return pd.read_csv(name)
+        except Exception:
+            pass
+    up = st.file_uploader("Cargar CSV (opcional)", type=["csv"])
+    if up is not None:
+        try:
+            return pd.read_csv(up)
+        except Exception:
+            st.error("No se pudo leer el CSV.")
     return None
 
-df_raw = cargar()
+df_raw = cargar_df()
 if df_raw is None or df_raw.empty:
     st.stop()
 
-# ---------------- Utilidades ----------------
-def numify(s: pd.Series) -> pd.Series:
-    if s.dtype == object:
-        s = s.astype(str).str.replace("%", "", regex=False)
-        s = s.str.replace(",", ".", regex=False)
-    return pd.to_numeric(s, errors="coerce")
+# --- Normalización mínima ---
+df = df_raw.copy()
+col_year = "Year"
+col_term = "Term"
+col_apps = "Applications"
+col_adm  = "Admitted"
+col_enrl = "Enrolled"
+col_ret  = "Retention Rate (%)"
+col_sat  = "Student Satisfaction (%)"
 
-def pick(cols, *needles):
-    for c in cols:
-        k = c.lower()
-        if any(n in k for n in needles):
-            return c
-    return None
+dept_cols = [c for c in df.columns if c.endswith(" Enrolled")]
+dept_names = [c.replace(" Enrolled","") for c in dept_cols]
 
-cols = list(df_raw.columns)
+# --- Sidebar: equipo y filtros ---
+with st.sidebar:
+    st.subheader("Equipo")
+    st.write("- [Tu nombre aquí]")
+    st.write("- [Integrante 2]")
+    st.write("- [Integrante 3]")
+    st.divider()
+    st.subheader("Filtros")
 
-col_year = pick(cols, "year", "anio", "ano")
-col_term = pick(cols, "term", "semestre", "period")
-col_apps = pick(cols, "applications", "applicant", "solicitud", "aplicac")
-col_enrl = pick(cols, "enroll", "matric", "inscrit", "registr")  # opcional
-col_ret  = pick(cols, "retention", "retencion")
-col_sat  = pick(cols, "satisf")
+years = sorted(df[col_year].dropna().unique().tolist())
+min_year, max_year = int(min(years)), int(max(years))
+rango = st.sidebar.slider(
+    "Rango de años",
+    min_value=min_year, max_value=max_year,
+    value=(min_year, max_year), step=1
+)
 
-req = [col_year, col_apps, col_ret, col_sat]
-if any(x is None for x in req):
-    st.error("Revisa encabezados: year, applications, retention, satisfaction.")
-    st.write("Detectadas:", {
-        "year": col_year, "term": col_term, "applications": col_apps,
-        "enrollments": col_enrl, "retention": col_ret, "satisfaction": col_sat
-    })
-    st.stop()
+terms = sorted(df[col_term].dropna().unique().tolist())
+sel_terms = st.sidebar.multiselect("Term", options=terms, default=terms)
 
-U = pd.DataFrame({
-    "year": numify(df_raw[col_year]),
-    "applications": numify(df_raw[col_apps]),
-    "retention": numify(df_raw[col_ret]),
-    "satisfaction": numify(df_raw[col_sat]),
-})
-if col_term: U["term"] = df_raw[col_term].astype(str)
-if col_enrl: U["enrollments"] = numify(df_raw[col_enrl])
+sel_depts = []
+if dept_cols:
+    sel_depts = st.sidebar.multiselect("Departamento", options=dept_names, default=dept_names)
 
-# Escalar % si vienen en 0–1
-if U["retention"].max() <= 1: U["retention"] *= 100
-if U["satisfaction"].max() <= 1: U["satisfaction"] *= 100
+# --- Filtro principal ---
+mask = (df[col_year].between(rango[0], rango[1])) & (df[col_term].isin(sel_terms))
+F = df.loc[mask].copy()
 
-# ---------------- Controles (estilo profe) ----------------
-col1, col2 = st.columns([2, 1])
-with col1:
-    modo = st.radio(
-        "Modo",
-        ["Acumulado hasta el año", "Solo el año seleccionado"],
-        index=0
-    )
-with col2:
-    grid = st.checkbox("Cuadrícula", value=True)
-    color1 = st.color_picker("Color principal", value="#4169E1")
+# --- KPIs ---
+c1, c2, c3, c4 = st.columns(4)
+apps_tot = int(F[col_apps].sum()) if len(F) else 0
+adm_tot  = int(F[col_adm].sum()) if len(F) else 0
+enr_tot  = int(F[col_enrl].sum()) if len(F) else 0
+ret_avg  = F[col_ret].mean() if len(F) else float("nan")
+sat_avg  = F[col_sat].mean() if len(F) else float("nan")
 
-years = sorted([int(y) for y in U["year"].dropna().unique()])
-if not years: st.stop()
+c1.metric("Solicitudes", f"{apps_tot:,}")
+c2.metric("Admitidos", f"{adm_tot:,}")
+c3.metric("Matriculados", f"{enr_tot:,}")
+c4.metric("Retención ⌀ / Satisfacción ⌀", f"{ret_avg:.1f}% / {sat_avg:.1f}%")
 
-idx = st.slider("Selecciona el año", min_value=1, max_value=len(years), value=len(years), step=1, format="%d")
-anio_sel = years[idx - 1]
-
-# ---------------- Subconjuntos ----------------
-if modo == "Acumulado hasta el año":
-    F = U[U["year"] <= anio_sel].copy()
-    titulo = f"Acumulado hasta {anio_sel}"
-else:
-    F = U[U["year"] == anio_sel].copy()
-    titulo = f"Año {anio_sel}"
-
-# ---------------- Métricas ----------------
-cA, cB, cC = st.columns(3)
-apps_tot = int(F["applications"].sum(skipna=True)) if len(F) else 0
-ret_avg  = F["retention"].mean(skipna=True) if len(F) else float("nan")
-sat_avg  = F["satisfaction"].mean(skipna=True) if len(F) else float("nan")
-cA.metric("Solicitudes", f"{apps_tot:,}")
-cB.metric("Retención ⌀", f"{ret_avg:.1f}%")
-cC.metric("Satisfacción ⌀", f"{sat_avg:.1f}%")
-
-# ---------------- Gráfica 1: Retención por año (línea) ----------------
-serie_ret = U.groupby("year", dropna=True)["retention"].mean().sort_index()
-if modo.startswith("Acumulado"):
-    serie_ret = serie_ret[serie_ret.index <= anio_sel]
-else:
-    serie_ret = serie_ret[serie_ret.index == anio_sel]
-
-fig1, ax1 = plt.subplots(figsize=(10, 4.5))
-ax1.plot(serie_ret.index.astype(str), serie_ret.values, marker="o", linestyle="-", color=color1)
-ax1.set_xlabel("Año"); ax1.set_ylabel("Retención (%)"); ax1.set_title(f"Retención — {titulo}")
-if grid: ax1.grid(True, alpha=0.3)
-fig1.tight_layout()
+# --- Gráfica 1: Retención por año (línea) ---
+serie_ret = F.groupby(col_year)[col_ret].mean().sort_index()
+fig1, ax1 = plt.subplots(figsize=(8.5, 4.2))
+ax1.plot(serie_ret.index.astype(str), serie_ret.values, marker="o", linestyle="-")
+ax1.set_xlabel("Año"); ax1.set_ylabel("Retención (%)")
+ax1.set_title("Retención promedio por año")
+ax1.grid(True, alpha=0.3)
 st.pyplot(fig1)
 
-# ---------------- Gráfica 2: Satisfacción por año (barras) ----------------
-serie_sat = U.groupby("year", dropna=True)["satisfaction"].mean().sort_index()
-if modo.startswith("Acumulado"):
-    serie_sat = serie_sat[serie_sat.index <= anio_sel]
-else:
-    serie_sat = serie_sat[serie_sat.index == anio_sel]
-
-fig2, ax2 = plt.subplots(figsize=(10, 4.5))
-ax2.bar(serie_sat.index.astype(str), serie_sat.values, color="#2DBE7E")
-ax2.set_xlabel("Año"); ax2.set_ylabel("Satisfacción (%)"); ax2.set_title(f"Satisfacción — {titulo}")
-if grid: ax2.grid(True, axis="y", alpha=0.3)
-fig2.tight_layout()
+# --- Gráfica 2: Satisfacción por año (barras) ---
+serie_sat = F.groupby(col_year)[col_sat].mean().sort_index()
+fig2, ax2 = plt.subplots(figsize=(8.5, 4.2))
+ax2.bar(serie_sat.index.astype(str), serie_sat.values)
+ax2.set_xlabel("Año"); ax2.set_ylabel("Satisfacción (%)")
+ax2.set_title("Satisfacción promedio por año")
+ax2.grid(True, axis="y", alpha=0.3)
 st.pyplot(fig2)
 
-# ---------------- Gráfica 3: Distribución por term (pastel con fallback) ----------------
-if "term" in U.columns:
-    G = U[U["year"] <= anio_sel] if modo.startswith("Acumulado") else U[U["year"] == anio_sel]
-    # usa 'applications' por defecto, si no hay, intenta con 'enrollments'
-    metric_col = "applications" if "applications" in G.columns else ("enrollments" if "enrollments" in G.columns else None)
-    if metric_col:
-        dist = (
-            G.groupby("term")[metric_col]
-             .sum(min_count=1)       # NaN si todo es NaN
-             .dropna()
-             .astype(float)
-        )
-        # limpiar ceros/negativos
-        dist = dist[dist > 0]
+# --- Gráfica 3: Solicitudes por term (donut) ---
+apps_by_term = F.groupby(col_term)[col_apps].sum().sort_values(ascending=False)
+if len(apps_by_term) >= 2:
+    fig3, ax3 = plt.subplots(figsize=(6.5, 4.0))
+    ax3.pie(
+        apps_by_term.values,
+        labels=apps_by_term.index.astype(str),
+        autopct="%1.0f%%",
+        startangle=90,
+        wedgeprops={"width": 0.6}
+    )
+    ax3.set_title("Solicitudes por term")
+    st.pyplot(fig3)
+elif len(apps_by_term) == 1:
+    fig3, ax3 = plt.subplots(figsize=(6.5, 4.0))
+    ax3.bar(apps_by_term.index.astype(str), apps_by_term.values)
+    ax3.set_title("Solicitudes por term")
+    ax3.grid(True, axis="y", alpha=0.3)
+    st.pyplot(fig3)
+else:
+    st.info("Sin datos para el gráfico por term en el rango seleccionado.")
 
-        if len(dist) >= 2:
-            fig3, ax3 = plt.subplots(figsize=(8, 4.8))
-            ax3.pie(
-                dist.values,
-                labels=dist.index.astype(str),
-                autopct="%1.0f%%",
-                startangle=90,
-                wedgeprops={"width": 0.6}
-            )
-            ax3.set_title(f"{metric_col.capitalize()} por term")
-            st.pyplot(fig3)
-        elif len(dist) == 1:
-            # Fallback: si solo hay una categoría, mostrar barra
-            fig3, ax3 = plt.subplots(figsize=(6.5, 4.0))
-            ax3.bar(dist.index.astype(str), dist.values, color="#F4A261")
-            ax3.set_xlabel("Term"); ax3.set_ylabel(metric_col.capitalize()); ax3.set_title(f"{metric_col.capitalize()} por term")
-            if grid: ax3.grid(True, axis="y", alpha=0.3)
-            fig3.tight_layout()
-            st.pyplot(fig3)
-        else:
-            st.info("Sin datos positivos para 'term' en el rango seleccionado.")
+# --- Matriculados por departamento (opcional) ---
+if dept_cols and sel_depts:
+    long = df.melt(id_vars=[col_year, col_term], value_vars=dept_cols,
+                   var_name="Dept", value_name="EnrolledDept")
+    long["Dept"] = long["Dept"].str.replace(" Enrolled","", regex=False)
+    long = long[long["Dept"].isin(sel_depts)]
+    long = long[long[col_year].between(rango[0], rango[1]) & long[col_term].isin(sel_terms)]
+    dist_dept = long.groupby("Dept")["EnrolledDept"].sum().sort_values(ascending=False)
 
-# ---------------- Tabs de datos ----------------
-tab1, tab2 = st.tabs(["Datos mostrados", "Datos completos"])
+    fig4, ax4 = plt.subplots(figsize=(6.5, 4.0))
+    ax4.barh(dist_dept.index.astype(str), dist_dept.values)
+    ax4.set_xlabel("Matriculados"); ax4.set_title("Matrícula acumulada por departamento")
+    ax4.grid(True, axis="x", alpha=0.3)
+    st.pyplot(fig4)
+
+# --- Datos ---
+tab1, tab2 = st.tabs(["Datos filtrados", "Datos completos"])
 with tab1:
     st.dataframe(F.reset_index(drop=True), use_container_width=True)
 with tab2:
-    st.dataframe(U, use_container_width=True)
+    st.dataframe(df_raw, use_container_width=True)
+
+st.caption("Ajusta los filtros para actualizar KPIs y gráficos. Incluye ≥ 3 visualizaciones (línea, barras, donut).")
