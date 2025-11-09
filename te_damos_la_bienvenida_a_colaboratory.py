@@ -1,4 +1,4 @@
-# app.py — Visualización (estilo profesor, limpio y sin textos “IA”)
+# app.py — Visualización (estilo profesor; fix pie chart robusto)
 
 import pandas as pd
 import streamlit as st
@@ -26,9 +26,10 @@ if df_raw is None or df_raw.empty:
     st.stop()
 
 # ---------------- Utilidades ----------------
-def numify(s):
+def numify(s: pd.Series) -> pd.Series:
     if s.dtype == object:
-        return pd.to_numeric(s.astype(str).str.replace("%", "").str.replace(",", "."), errors="coerce")
+        s = s.astype(str).str.replace("%", "", regex=False)
+        s = s.str.replace(",", ".", regex=False)
     return pd.to_numeric(s, errors="coerce")
 
 def pick(cols, *needles):
@@ -66,19 +67,17 @@ if col_term: U["term"] = df_raw[col_term].astype(str)
 if col_enrl: U["enrollments"] = numify(df_raw[col_enrl])
 
 # Escalar % si vienen en 0–1
-if U["retention"].max() <= 1: U["retention"] = U["retention"] * 100
-if U["satisfaction"].max() <= 1: U["satisfaction"] = U["satisfaction"] * 100
+if U["retention"].max() <= 1: U["retention"] *= 100
+if U["satisfaction"].max() <= 1: U["satisfaction"] *= 100
 
 # ---------------- Controles (estilo profe) ----------------
 col1, col2 = st.columns([2, 1])
-
 with col1:
     modo = st.radio(
         "Modo",
         ["Acumulado hasta el año", "Solo el año seleccionado"],
         index=0
     )
-
 with col2:
     grid = st.checkbox("Cuadrícula", value=True)
     color1 = st.color_picker("Color principal", value="#4169E1")
@@ -99,16 +98,16 @@ else:
 
 # ---------------- Métricas ----------------
 cA, cB, cC = st.columns(3)
-apps_tot = int(F["applications"].sum())
-ret_avg  = F["retention"].mean()
-sat_avg  = F["satisfaction"].mean()
+apps_tot = int(F["applications"].sum(skipna=True)) if len(F) else 0
+ret_avg  = F["retention"].mean(skipna=True) if len(F) else float("nan")
+sat_avg  = F["satisfaction"].mean(skipna=True) if len(F) else float("nan")
 cA.metric("Solicitudes", f"{apps_tot:,}")
 cB.metric("Retención ⌀", f"{ret_avg:.1f}%")
 cC.metric("Satisfacción ⌀", f"{sat_avg:.1f}%")
 
 # ---------------- Gráfica 1: Retención por año (línea) ----------------
-serie_ret = U.groupby("year")["retention"].mean().sort_index()
-if modo == "Acumulado hasta el año":
+serie_ret = U.groupby("year", dropna=True)["retention"].mean().sort_index()
+if modo.startswith("Acumulado"):
     serie_ret = serie_ret[serie_ret.index <= anio_sel]
 else:
     serie_ret = serie_ret[serie_ret.index == anio_sel]
@@ -121,8 +120,8 @@ fig1.tight_layout()
 st.pyplot(fig1)
 
 # ---------------- Gráfica 2: Satisfacción por año (barras) ----------------
-serie_sat = U.groupby("year")["satisfaction"].mean().sort_index()
-if modo == "Acumulado hasta el año":
+serie_sat = U.groupby("year", dropna=True)["satisfaction"].mean().sort_index()
+if modo.startswith("Acumulado"):
     serie_sat = serie_sat[serie_sat.index <= anio_sel]
 else:
     serie_sat = serie_sat[serie_sat.index == anio_sel]
@@ -134,19 +133,42 @@ if grid: ax2.grid(True, axis="y", alpha=0.3)
 fig2.tight_layout()
 st.pyplot(fig2)
 
-# ---------------- Gráfica 3: Distribución por term (pastel) ----------------
+# ---------------- Gráfica 3: Distribución por term (pastel con fallback) ----------------
 if "term" in U.columns:
-    if modo == "Acumulado hasta el año":
-        G = U[U["year"] <= anio_sel]
-    else:
-        G = U[U["year"] == anio_sel]
-    if len(G) > 0:
-        dist = G.groupby("term")["applications"].sum().sort_values(ascending=False)
-        if dist.sum() > 0:
+    G = U[U["year"] <= anio_sel] if modo.startswith("Acumulado") else U[U["year"] == anio_sel]
+    # usa 'applications' por defecto, si no hay, intenta con 'enrollments'
+    metric_col = "applications" if "applications" in G.columns else ("enrollments" if "enrollments" in G.columns else None)
+    if metric_col:
+        dist = (
+            G.groupby("term")[metric_col]
+             .sum(min_count=1)       # NaN si todo es NaN
+             .dropna()
+             .astype(float)
+        )
+        # limpiar ceros/negativos
+        dist = dist[dist > 0]
+
+        if len(dist) >= 2:
             fig3, ax3 = plt.subplots(figsize=(8, 4.8))
-            wedges, _ = ax3.pie(dist.values, labels=dist.index.astype(str), autopct="%1.0f%%", startangle=90, wedgeprops={"width": 0.6})
-            ax3.set_title("Aplicaciones por term")
+            ax3.pie(
+                dist.values,
+                labels=dist.index.astype(str),
+                autopct="%1.0f%%",
+                startangle=90,
+                wedgeprops={"width": 0.6}
+            )
+            ax3.set_title(f"{metric_col.capitalize()} por term")
             st.pyplot(fig3)
+        elif len(dist) == 1:
+            # Fallback: si solo hay una categoría, mostrar barra
+            fig3, ax3 = plt.subplots(figsize=(6.5, 4.0))
+            ax3.bar(dist.index.astype(str), dist.values, color="#F4A261")
+            ax3.set_xlabel("Term"); ax3.set_ylabel(metric_col.capitalize()); ax3.set_title(f"{metric_col.capitalize()} por term")
+            if grid: ax3.grid(True, axis="y", alpha=0.3)
+            fig3.tight_layout()
+            st.pyplot(fig3)
+        else:
+            st.info("Sin datos positivos para 'term' en el rango seleccionado.")
 
 # ---------------- Tabs de datos ----------------
 tab1, tab2 = st.tabs(["Datos mostrados", "Datos completos"])
